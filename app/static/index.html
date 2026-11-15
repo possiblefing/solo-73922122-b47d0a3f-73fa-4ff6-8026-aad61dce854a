@@ -1,0 +1,180 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>夜间入仓作业加速测算</title>
+  <link rel="stylesheet" href="/static/styles.css">
+</head>
+<body>
+  <header class="page-header">
+    <div class="wrap">
+      <p class="eyebrow">数仓值班工具 · 批处理调度</p>
+      <h1>夜间入仓作业加速测算</h1>
+      <p class="lede">
+        上传一次实际运行的时间线，选择一项作业并填入拟缩短的秒数，
+        按本次运行实测的“就绪后等待”推算整批数据能提前多久交付。
+      </p>
+    </div>
+  </header>
+
+  <main class="wrap layout">
+    <section class="card">
+      <div class="card-head">
+        <h2><span class="step">1</span> 上传运行记录</h2>
+        <button type="button" class="link-btn" id="load-sample">载入示例</button>
+      </div>
+      <p class="hint">
+        JSON 需包含 2～30 个作业，每项含 <code>id</code>、<code>depends_on</code>
+        （作业 ID 数组）、<code>start</code> 与 <code>end</code>（相对批次起点的秒数，起点为 0）。
+        也接受顶层直接是作业数组，或依赖字段写作 <code>dependencies</code> / <code>deps</code>。
+      </p>
+
+      <label class="dropzone" id="dropzone" for="file-input">
+        <input type="file" id="file-input" accept=".json,application/json" hidden>
+        <span class="dropzone-icon" aria-hidden="true">⇪</span>
+        <span class="dropzone-title">选择或拖入 JSON 文件</span>
+        <span class="dropzone-sub" id="file-name">尚未选择文件</span>
+      </label>
+
+      <details class="paste">
+        <summary>或直接粘贴 JSON</summary>
+        <textarea id="json-input" rows="8" spellcheck="false"
+          placeholder='{"jobs": [{"id": "extract_orders", "depends_on": [], "start": 0, "end": 600}, ...]}'></textarea>
+        <button type="button" class="btn btn-secondary" id="parse-pasted">校验粘贴内容</button>
+      </details>
+
+      <div id="upload-errors" class="alert alert-error" role="alert" hidden></div>
+      <div id="upload-ok" class="alert alert-ok" role="status" hidden></div>
+    </section>
+
+    <section class="card is-disabled" id="config-card" aria-disabled="true">
+      <div class="card-head">
+        <h2><span class="step">2</span> 选择作业与缩短量</h2>
+      </div>
+      <p class="hint" id="config-hint">请先上传一份有效的运行记录。</p>
+
+      <div class="field-grid">
+        <div class="field">
+          <label for="job-select">拟加速的作业</label>
+          <select id="job-select" disabled>
+            <option value="">— 请先上传记录 —</option>
+          </select>
+        </div>
+        <div class="field">
+          <label for="seconds-input">拟缩短的秒数</label>
+          <div class="input-row">
+            <input id="seconds-input" type="number" min="0" step="1" placeholder="例如 300" disabled>
+            <span class="unit">秒</span>
+          </div>
+          <p class="field-hint" id="seconds-hint">上传记录后显示该作业的原耗时上限。</p>
+        </div>
+      </div>
+
+      <div class="quick-row" id="quick-row" hidden>
+        <span class="quick-label">快速填入：</span>
+        <button type="button" class="chip-btn" data-fraction="0.1">10%</button>
+        <button type="button" class="chip-btn" data-fraction="0.25">25%</button>
+        <button type="button" class="chip-btn" data-fraction="0.5">50%</button>
+        <button type="button" class="chip-btn" data-fraction="1">全部耗时</button>
+      </div>
+
+      <div id="config-errors" class="alert alert-error" role="alert" hidden></div>
+
+      <button type="button" class="btn btn-primary" id="analyze-btn" disabled>
+        测算整批提前量
+      </button>
+    </section>
+
+    <section class="results" id="results" hidden aria-live="polite">
+      <div class="card result-card">
+        <div class="card-head">
+          <h2>整批交付时刻</h2>
+          <span class="pill" id="target-pill"></span>
+        </div>
+
+        <div class="metric-row">
+          <div class="metric">
+            <span class="metric-label">原本整批完成</span>
+            <span class="metric-value" id="original-completion"></span>
+            <span class="metric-sub" id="original-completion-sub"></span>
+          </div>
+          <div class="metric-arrow" aria-hidden="true">→</div>
+          <div class="metric metric-emph">
+            <span class="metric-label">预计整批完成</span>
+            <span class="metric-value" id="predicted-completion"></span>
+            <span class="metric-sub" id="predicted-completion-sub"></span>
+          </div>
+          <div class="metric metric-saved">
+            <span class="metric-label">整批节省</span>
+            <span class="metric-value" id="saved-seconds"></span>
+            <span class="metric-sub" id="saved-sub"></span>
+          </div>
+        </div>
+
+        <div class="notes" id="result-notes"></div>
+
+        <div class="chain-block">
+          <h3>决定预计完成时刻的依赖链</h3>
+          <p class="hint" id="chain-hint"></p>
+          <div class="chain" id="chain"></div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-head">
+          <h2>整批作业明细</h2>
+          <div class="legend">
+            <span class="legend-item"><i class="swatch swatch-target"></i>目标作业</span>
+            <span class="legend-item"><i class="swatch swatch-chain"></i>关键链</span>
+            <span class="legend-item"><i class="swatch swatch-original"></i>原本占用的区间</span>
+          </div>
+        </div>
+        <div class="timeline-wrap">
+          <div class="timeline-inner">
+            <div class="timeline-axis" id="timeline-axis"></div>
+            <div class="timeline-body" id="timeline"></div>
+          </div>
+        </div>
+        <p class="scroll-hint">← 左右滑动查看完整时间轴 →</p>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th scope="col">作业</th>
+                <th scope="col">依赖</th>
+                <th scope="col" class="num">原开始</th>
+                <th scope="col" class="num">原结束</th>
+                <th scope="col" class="num">实测等待</th>
+                <th scope="col" class="num">预计开始</th>
+                <th scope="col" class="num">预计结束</th>
+                <th scope="col" class="num">结束变化</th>
+              </tr>
+            </thead>
+            <tbody id="jobs-body"></tbody>
+          </table>
+        </div>
+      </div>
+
+      <div class="card model-card">
+        <h2>推算口径</h2>
+        <ul>
+          <li>实测等待 = 该作业实际开始时刻 − 全部上游作业完成时刻（就绪时刻）。</li>
+          <li>缩短目标作业只影响它的结束时刻，不改变它的开始时刻；其下游从新的就绪时刻起，再加上本次运行实测的等待时长开始。</li>
+          <li>整批所有作业一起重算完成时刻。若其他并行分支接替成为新瓶颈，实际节省会小于拟缩短的秒数。</li>
+          <li>记录无效（作业数、依赖、时序、缩短量任一不合法）时不输出任何预测。</li>
+        </ul>
+      </div>
+    </section>
+  </main>
+
+  <footer class="page-footer">
+    <div class="wrap">
+      <span>时间均为相对批次起点的秒数 · 批次起点 = 0 秒</span>
+      <span>夜间入仓加速测算服务</span>
+    </div>
+  </footer>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>
